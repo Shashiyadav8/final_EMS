@@ -2,6 +2,14 @@
 import React, { useState } from 'react';
 import './EmployeeCorrectionRequest.css';
 import { authFetch } from './utils/authFetch';
+
+import dayjs from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
 function EmployeeCorrectionRequest({ token }) {
   const [form, setForm] = useState({
     date: '',
@@ -19,6 +27,10 @@ function EmployeeCorrectionRequest({ token }) {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
+  const convertToUTC = (date, time) => {
+    return dayjs.tz(`${date}T${time}`, 'Asia/Kolkata').utc().toISOString();
+  };
+
   const handleSubmit = async () => {
     setMessage('');
 
@@ -32,18 +44,18 @@ function EmployeeCorrectionRequest({ token }) {
       return;
     }
 
-    const requestedPunchIn = form.requested_punch_in
-      ? `${form.date}T${form.requested_punch_in}`
-      : null;
+    let requestedPunchIn = null;
+    let requestedPunchOut = null;
 
-    const requestedPunchOut = form.requested_punch_out
-      ? `${form.date}T${form.requested_punch_out}`
-      : null;
+    try {
+      if (form.requested_punch_in) {
+        requestedPunchIn = convertToUTC(form.date, form.requested_punch_in);
+      }
 
-    if (
-      (requestedPunchIn && isNaN(new Date(requestedPunchIn))) ||
-      (requestedPunchOut && isNaN(new Date(requestedPunchOut)))
-    ) {
+      if (form.requested_punch_out) {
+        requestedPunchOut = convertToUTC(form.date, form.requested_punch_out);
+      }
+    } catch (error) {
       setMessage('❌ Invalid date/time format.');
       return;
     }
