@@ -4,13 +4,14 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { Parser } = require('json2csv');
+const { countWeekdaysInMonth } = require('../utils/datehelper');
 
 const authenticate = require('../middleware/authenticate');
 const checkOfficeIP = require('../middleware/checkOfficeIP');
 const Attendance = require('../models/Attendance');
 const Staff = require('../models/Staff');
 
-// Multer setup for photo uploads
+// Multer setup
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => {
@@ -20,40 +21,34 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Helper to normalize IP format
+// Normalize IP
 const normalizeIP = (ip = '') =>
   ip.replace(/\s+/g, '').replace('::ffff:', '').replace('::1', '127.0.0.1');
 
-// ✅ Punch In / Punch Out Route
+// ✅ Punch In / Out
 router.post('/punch', authenticate, upload.single('photo'), checkOfficeIP, async (req, res) => {
   const empId = req.user._id;
   const empCode = req.user.employee_id;
-  const today = new Date().toISOString().split('T')[0];
   const now = new Date();
+
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
 
   const forwarded = req.headers['x-forwarded-for'] || '';
   const remote = req.socket.remoteAddress || '';
   const localIPFromClient = req.body?.localIP || '';
-
-  const forwardedIPs = forwarded.split(',').map(normalizeIP);
-  const remoteIP = normalizeIP(remote);
-  const primaryIP = forwardedIPs[0] || remoteIP;
+  const primaryIP = normalizeIP(forwarded.split(',')[0] || remote);
   const normalizedLocalIP = normalizeIP(localIPFromClient);
-
   const photoPath = req.file?.path?.replace(/\\/g, '/') || '';
 
-  console.log('------------------------------------------');
-  console.log(`📌 Punch attempt by ${empCode}`);
-  console.log(`📡 Forwarded IPs: ${forwarded}`);
-  console.log(`🌐 Remote IP: ${remote}`);
-  console.log(`✅ Normalized Primary IP: ${primaryIP}`);
-  console.log(`📱 Local IP from device: ${normalizedLocalIP}`);
-  console.log('------------------------------------------');
-
   try {
-    let record = await Attendance.findOne({ employee_ref: empId, date: today });
+    let record = await Attendance.findOne({
+      employee_ref: empId,
+      date: { $gte: startOfDay, $lte: endOfDay },
+    });
 
-    // ✅ Punch In
     if (!record) {
       if (!photoPath) {
         return res.status(400).json({ message: 'Photo is required for Punch In.' });
@@ -62,22 +57,17 @@ router.post('/punch', authenticate, upload.single('photo'), checkOfficeIP, async
       await Attendance.create({
         employee_ref: empId,
         employee_id: empCode,
-        date: today,
+        date: now,
         punch_in_time: now,
         ip: primaryIP,
         photo_path: photoPath,
       });
 
-      console.log(`✅ Punch In recorded for ${empCode} at ${now.toLocaleTimeString()}`);
       return res.json({ message: '✅ Punch In successful', type: 'in' });
     }
 
-    // ✅ Punch Out with minimum 1-hour gap
     if (!record.punch_out_time) {
-      const punchInTime = new Date(record.punch_in_time);
-      const diffInMs = now - punchInTime;
-      const diffInHours = diffInMs / (1000 * 60 * 60);
-
+      const diffInHours = (now - new Date(record.punch_in_time)) / (1000 * 60 * 60);
       if (diffInHours < 1) {
         return res.status(400).json({
           message: '⚠️ You can only punch out after 1 hour from punch in.',
@@ -89,11 +79,9 @@ router.post('/punch', authenticate, upload.single('photo'), checkOfficeIP, async
       if (photoPath) record.photo_path = photoPath;
       await record.save();
 
-      console.log(`✅ Punch Out recorded for ${empCode} at ${now.toLocaleTimeString()}`);
       return res.json({ message: '✅ Punch Out successful', type: 'out' });
     }
 
-    // ❌ Already punched in & out
     return res.status(400).json({ message: '⚠️ Already punched in and out today.' });
   } catch (err) {
     console.error('❌ Punch error:', err);
@@ -101,13 +89,17 @@ router.post('/punch', authenticate, upload.single('photo'), checkOfficeIP, async
   }
 });
 
-// ✅ Attendance status route
+// ✅ Status Check
 router.get('/status', authenticate, async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
     const record = await Attendance.findOne({
       employee_ref: req.user._id,
-      date: today,
+      date: { $gte: startOfDay, $lte: endOfDay },
     });
 
     res.json({
@@ -115,12 +107,11 @@ router.get('/status', authenticate, async (req, res) => {
       punch_out: record?.punch_out_time || null,
     });
   } catch (err) {
-    console.error('Status fetch error:', err);
     res.status(500).json({ message: 'Unable to fetch punch status' });
   }
 });
 
-// ✅ CSV Export Route
+// ✅ CSV Export
 router.get('/export', authenticate, async (req, res) => {
   try {
     const records = await Attendance.find({});
@@ -138,12 +129,11 @@ router.get('/export', authenticate, async (req, res) => {
     const csv = new Parser().parse(data);
     res.header('Content-Type', 'text/csv').attachment('attendance.csv').send(csv);
   } catch (err) {
-    console.error('CSV export error:', err);
     res.status(500).json({ message: 'Failed to generate CSV' });
   }
 });
 
-// ✅ Admin: View all attendance records
+// ✅ Admin: View Attendance Records
 router.get('/attendance-records', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Admins only' });
@@ -167,12 +157,11 @@ router.get('/attendance-records', authenticate, async (req, res) => {
 
     res.json(data);
   } catch (err) {
-    console.error('Admin fetch error:', err);
     res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
 
-// ✅ View Selfie Photo (Admin only)
+// ✅ Admin: View Photo
 router.get('/photo/:id', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Admins only' });
@@ -187,8 +176,97 @@ router.get('/photo/:id', authenticate, async (req, res) => {
 
     res.sendFile(fullPath);
   } catch (err) {
-    console.error('❌ Photo fetch error:', err);
     res.status(500).json({ message: 'Failed to fetch photo' });
+  }
+});
+
+// ✅ Monthly Summary
+router.get('/monthly-summary', authenticate, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Admins only' });
+  }
+
+  try {
+    const records = await Attendance.aggregate([
+      {
+        $match: {
+          punch_in_time: { $exists: true },
+          punch_out_time: { $exists: true },
+          date: { $type: "date" } // ✅ Only include valid date types
+        }
+      },
+      {
+        $group: {
+          _id: {
+            employee_id: "$employee_id",
+            year: { $year: "$date" },
+            month: { $month: "$date" }
+          },
+          present_days: { $sum: 1 }
+        }
+      },
+      {
+        $lookup: {
+          from: "staff",
+          localField: "_id.employee_id",
+          foreignField: "employee_id",
+          as: "employee"
+        }
+      },
+      { $unwind: "$employee" }
+    ]);
+
+    const summary = records.map(item => {
+      const { employee_id, year, month } = item._id;
+      const totalWorkingDays = countWeekdaysInMonth(year, month - 1); // Month is 0-based
+      return {
+        employee_id,
+        employee_name: item.employee.name,
+        month: `${new Date(year, month - 1).toLocaleString('default', { month: 'long' })} ${year}`,
+        present_days: item.present_days,
+        total_working_days: totalWorkingDays,
+      };
+    });
+
+    res.json(summary);
+  } catch (err) {
+    console.error('Summary error:', err);
+    res.status(500).json({ message: 'Failed to calculate summary' });
+  }
+});
+// ✅ Admin: Dashboard Summary
+router.get('/admin-dashboard-summary', authenticate, async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Admins only' });
+  }
+
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Total employees
+    const totalEmployees = await Staff.countDocuments({});
+
+    // Total punch-ins today
+    const punchInCount = await Attendance.countDocuments({
+      date: today,
+      punch_in_time: { $exists: true },
+    });
+
+    // Total punch-outs today
+    const punchOutCount = await Attendance.countDocuments({
+      date: today,
+      punch_out_time: { $exists: true },
+    });
+
+    res.json({
+      totalEmployees,
+      punchInCount,
+      punchOutCount,
+    });
+  } catch (err) {
+    console.error('Dashboard summary error:', err);
+    res.status(500).json({ message: 'Failed to fetch dashboard summary' });
   }
 });
 

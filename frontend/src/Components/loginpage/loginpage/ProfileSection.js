@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import './ProfileSection.css'; // Ensure CSS is correctly linked
 import { authFetch } from './utils/authFetch';
-
+import ChangePasswordSection from './ChangePasswordSection';
 function ProfileSection() {
   const [profile, setProfile] = useState(null);
   const [message, setMessage] = useState('');
@@ -107,6 +107,7 @@ function ProfileSection() {
       <button className="save-button" onClick={handleSave}>
         Save Changes
       </button>
+      <ChangePasswordSection/>
     </div>
   );
 }
